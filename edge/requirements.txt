@@ -1,0 +1,7 @@
+ultralytics
+opencv-python
+PyYAML
+requests
+supabase
+python-dotenv
+opencv-python

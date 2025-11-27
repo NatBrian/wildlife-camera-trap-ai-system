@@ -1,0 +1,27 @@
+camera_source: 0  # webcam index, RTSP URL, or path to a local video file
+model_path: ./models/best.pt
+output_dir: ./captures
+device_id: cam-trap-01
+no_animal_timeout_sec: 5
+min_confidence: 0.35
+target_classes: []  # leave empty to allow all model classes
+thumbnail_quality: 85
+
+notifications:
+  enabled: true
+  provider: telegram  # or discord
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
+  discord:
+    webhook_url: ${DISCORD_WEBHOOK_URL}
+
+supabase:
+  enabled: true
+  url: ${SUPABASE_URL}
+  service_role_key: ${SUPABASE_SERVICE_ROLE_KEY}
+  bucket: ${SUPABASE_STORAGE_BUCKET}
+  folder: ${SUPABASE_FOLDER}
+
+logging:
+  level: INFO

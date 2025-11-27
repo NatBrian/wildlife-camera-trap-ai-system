@@ -1,3 +1,8 @@
+# custom
+captures
+models
+animal.mp4
+
 # Logs
 logs
 *.log
@@ -134,3 +139,25 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Python / edge app
+.conda/
+.venv/
+__pycache__/
+*.pyc
+gpt/edge/config.yaml
+gpt/edge/.env
+gpt/edge/captures/
+gpt/edge/models/
+
+# Web app env and build
+gpt/web/.env.local
+gpt/web/.next
+gpt/web/out
+
+# Infra / tooling
+infra/.env
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
