@@ -18,6 +18,11 @@ export default async function ClipDetail({ params }: Props) {
   const started = new Date(clip.started_at);
   const ended = new Date(clip.ended_at);
 
+  const bucket = process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET || "clips";
+  const videoUrl = clip.local_video_path
+    ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${bucket}/${clip.local_video_path}`
+    : null;
+
   return (
     <div className="space-y-4">
       <Link href="/" className="text-mint hover:underline">
@@ -25,18 +30,22 @@ export default async function ClipDetail({ params }: Props) {
       </Link>
 
       <div className="glass rounded-2xl p-6">
-        <div className="flex flex-col md:flex-row gap-6">
-          {clip.thumbnail_url ? (
-            <img
-              src={clip.thumbnail_url}
-              alt={`Thumbnail for ${clip.primary_species || "clip"}`}
-              className="w-full md:w-72 rounded-xl border border-white/10 object-cover"
-            />
-          ) : (
-            <div className="w-full md:w-72 h-48 rounded-xl border border-white/10 flex items-center justify-center text-slate-400">
-              No thumbnail
-            </div>
-          )}
+        <div className="flex flex-col gap-6">
+          {/* Video Player Section */}
+          <div className="w-full aspect-video bg-black rounded-xl overflow-hidden border border-white/10 relative">
+            {videoUrl ? (
+              <video
+                src={videoUrl}
+                poster={clip.thumbnail_url || undefined}
+                controls
+                className="w-full h-full object-contain"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-slate-400">
+                Video not available
+              </div>
+            )}
+          </div>
 
           <div className="flex-1 space-y-3">
             <div>
@@ -62,10 +71,6 @@ export default async function ClipDetail({ params }: Props) {
               <div>
                 <dt className="text-slate-400">End</dt>
                 <dd className="text-slate-100">{ended.toLocaleString()}</dd>
-              </div>
-              <div className="md:col-span-2">
-                <dt className="text-slate-400">Local video path</dt>
-                <dd className="text-slate-100 font-mono text-xs">{clip.local_video_path || "Stored on device"}</dd>
               </div>
             </dl>
 
