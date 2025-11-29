@@ -303,7 +303,9 @@ export default function CameraCapture() {
       try {
         inferCtx.drawImage(video, 0, 0, inputSize, inputSize);
         const imageData = inferCtx.getImageData(0, 0, inputSize, inputSize);
-        const detections = await runInference(imageData);
+        const allDetections = await runInference(imageData);
+        // Keep only detections where the label is not "person" or "vehicle"
+        const detections = allDetections.filter(d => d.label !== "person" && d.label !== "vehicle");
         detectionsRef.current = detections;
         const counts = toCounts(detections);
         setLiveCounts(counts);

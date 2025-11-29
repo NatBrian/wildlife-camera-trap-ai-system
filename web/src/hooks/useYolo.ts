@@ -160,6 +160,37 @@ function decodeDetections(
   let values = 0;
   let channelsFirst = false;
 
+  // Handle YOLOv10 format: [1, 300, 6] -> [x1, y1, x2, y2, score, class]
+  // This output is post-processed and does not require NMS.
+  if (dims.length === 3 && dims[2] === 6) {
+    const numDetections = dims[1];
+    const detections: Detection[] = [];
+    for (let i = 0; i < numDetections; i++) {
+      const base = i * 6;
+      const x1 = data[base];
+      const y1 = data[base + 1];
+      const x2 = data[base + 2];
+      const y2 = data[base + 3];
+      const score = data[base + 4];
+      const classId = data[base + 5];
+
+      if (score < confThreshold) continue;
+
+      detections.push({
+        box: [
+          clamp(x1, 0, inputSize),
+          clamp(y1, 0, inputSize),
+          clamp(x2, 0, inputSize),
+          clamp(y2, 0, inputSize),
+        ],
+        score: score,
+        classId: classId,
+        label: labels[classId] || `class_${classId}`,
+      });
+    }
+    return detections.sort((a, b) => b.score - a.score).slice(0, topk);
+  }
+
   // Handle both (1, channels, anchors) and (1, anchors, values) layouts.
   if (dims.length === 3) {
     if (dims[1] > dims[2]) {

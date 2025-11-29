@@ -1,102 +1,100 @@
-# Wildlife Camera-Trap System (edge + web)
+# Wildlife Camera-Trap System
 
-End-to-end, free-tier-friendly setup for capturing animal clips on-device and browsing metadata in a Next.js app backed by Supabase.
+An end-to-end AI system for detecting and recording wildlife. Supports training custom models, running inference on edge devices (Python) or directly in the browser (Web), and managing clips via a modern dashboard.
 
-## Project structure
+![demo](web/public/models/demo.gif)
+
+## Project Structure
 
 ```
 .
 ├── infra/
-│   ├── supabase_schema.sql        # clips table + indexes + RLS
-│   └── .env.example               # Supabase keys/bucket names (copy to real env files)
-├── edge/                          # Python capture app (runs near camera)
-│   ├── config.example.yaml
-│   ├── .env.example
-│   ├── requirements.txt
-│   ├── main.py                    # orchestrates capture loop
-│   ├── detection.py               # YOLO wrapper
-│   ├── recorder.py                # start/stop logic, writes mp4/json/jpg
-│   ├── notifier.py                # Telegram/Discord
-│   ├── supabase_client.py         # metadata + thumbnail upload
-│   └── utils/paths.py
-└── web/                           # Next.js App Router UI (deploy to Vercel)
-    ├── package.json
-    ├── next.config.mjs
-    ├── tailwind.config.mjs
-    ├── postcss.config.mjs
-    ├── tsconfig.json
-    ├── .env.example
-    └── src/
-        ├── app/
-        │   ├── layout.tsx
-        │   ├── page.tsx            # list + filters
-        │   └── clips/[id]/page.tsx # detail view
-        ├── components/
-        │   ├── ClipCard.tsx
-        │   ├── ClipFilters.tsx
-        │   └── ClipList.tsx
-        ├── lib/supabaseClient.ts
-        ├── styles/globals.css
-        └── types.ts
+│   ├── supabase_schema.sql        # Database schema (clips table + indexes + RLS)
+│   └── .env.example               # Supabase keys template
+├── notebook/                      # Model Training
+│   └── wildlife_yolov8_pipeline.ipynb # End-to-end YOLOv8 training & export pipeline
+├── edge/                          # Python Capture App (Dedicated Hardware)
+│   ├── config.example.yaml        # Capture settings (camera, model, thresholds)
+│   ├── main.py                    # Orchestrates capture loop
+│   ├── detection.py               # YOLOv8 (PyTorch) wrapper
+│   ├── recorder.py                # Video recording & file management
+│   └── supabase_client.py         # Uploads metadata & thumbnails
+└── web/                           # Next.js Web App (Dashboard + Browser Capture)
+    ├── public/models/             # ONNX models & labels for browser inference
+    ├── src/app/
+    │   ├── page.tsx               # Dashboard (Clip List)
+    │   └── capture/page.tsx       # In-Browser Capture Page
+    ├── src/components/
+    │   └── CameraCapture.tsx      # ONNX Runtime Web implementation
+    └── src/lib/modelConfig.ts     # Browser model configuration
 ```
 
-## Supabase (free tier)
+## 1. Notebook (Training & Export)
 
-1) Create a Supabase project.  
-2) In the SQL editor, run `infra/supabase_schema.sql`. This creates the `clips` table, indexes, and read-only RLS for anon clients.  
-3) Create a public storage bucket named `thumbnails` (or your choice) for small JPEGs; mark it public so URLs are fetchable by the web app.  
-4) Grab keys/URLs:
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY` (edge insert + storage; never expose to frontend)
-   - `SUPABASE_ANON_KEY` (frontend read-only)
-5) Set environment values:
-   - Edge: copy `edge/.env.example` → `edge/.env`, fill `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`, optionally `SUPABASE_FOLDER`.
-   - Web: copy `web/.env.example` → `web/.env.local`, fill `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`.
+Located in `notebook/wildlife_yolov8_pipeline.ipynb`.
+- **Purpose**: Train YOLOv8 models on wildlife datasets (e.g., ENA24, LILA BC).
+- **Features**:
+  - Dataset download and formatting.
+  - Model training (YOLOv8n/s/m).
+  - Evaluation and visualization.
+  - **Export to ONNX**: Converts trained models to `.onnx` format for use in the Web App.
 
-## Notifications (Telegram or Discord, free)
+## 2. Web App (Dashboard + Browser Capture)
 
-- **Telegram**: Use `@BotFather` to create a bot → get token. Get your chat ID (via `@userinfobot` or a simple test bot). Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (env or `config.yaml`).  
-- **Discord**: In any channel, create a webhook and set `DISCORD_WEBHOOK_URL`.  
-- Toggle provider in `edge/config.yaml` under `notifications`.
+A Next.js application.
 
-## Edge app (Python capture)
+### Features
+- **Dashboard**: Browse, filter, and watch recorded clips stored in Supabase.
+- **In-Browser Capture** (`/capture`): 
+  - Turns any laptop or phone into a camera trap.
+  - Runs **YOLOv8 via ONNX Runtime Web** directly in the browser (Client-side only).
+  - Detects animals, auto-records clips, and uploads them to Supabase.
+  - Configurable models (e.g., `my-ena24.onnx`, `MDV6-yolov10-c.onnx`) in `public/models`.
 
-1) `cd edge && cp config.example.yaml config.yaml` then adjust:
-   - `camera_source`: webcam index (0) or RTSP URL.
-   - `model_path`: YOLO weights (e.g., `./models/best.pt`).
-   - `output_dir`: where mp4/json/jpg are stored locally.
-   - `device_id`: any label for this device.
-   - `no_animal_timeout_sec`: seconds with no detections before stopping a clip.
-   - Notification + Supabase sections as needed.
-2) `cp .env.example .env` and fill Supabase + notification secrets.  
-3) Install deps: `pip install -r requirements.txt` (Python 3.9+).  
-4) Run: `python main.py --config config.yaml`.  
-   - For local test footage (instead of a live camera), use `python main.py --config config.yaml --video ./animal_clip.mp4` and add `--loop-video` to restart when the file ends.  
-   - The recorder starts on the first detection, stops after `no_animal_timeout_sec` of silence, writes `.mp4`, `.json`, `.jpg`, sends a notification, and (optionally) uploads metadata + thumbnail to Supabase. Heavy video files stay local.
+### Setup
+1. `cd web`
+2. `cp .env.example .env.local` and fill in Supabase credentials.
+3. `npm install`
+4. `npm run dev` -> Open `http://localhost:3000`
 
-## Web app (Next.js + Vercel free tier)
+## 3. Edge App (Python Capture)
 
-1) `cd web && cp .env.example .env.local` and fill Supabase public URL/anon key/bucket.  
-2) Install deps: `npm install`.  
-3) Run locally: `npm run dev` then open `http://localhost:3000`.  
-4) Deploy: push the repo to GitHub, connect to Vercel, set env vars (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`). The app reads metadata only; anon key remains read-only thanks to RLS.
+A lightweight Python application designed for dedicated edge devices (Raspberry Pi, Jetson, Laptop).
 
-## Notes & design choices
+### Features
+- Runs **YOLOv8 (PyTorch)** for high-performance inference.
+- Connects to USB webcams or RTSP streams.
+- Records `.mp4` clips locally and syncs metadata/thumbnails to Supabase.
+- Supports offline operation (uploads when internet is available).
+- Notifications via Telegram or Discord.
 
-- Free-tier friendly: videos never leave the device; only JSON metadata + tiny JPEGs hit Supabase.  
-- Supabase RLS: enabled with public select; inserts happen with the service role key on the edge device (bypasses RLS).  
-- YOLO model path is configurable; use a small model (e.g., YOLOv8n) for speed on modest hardware.  
-- Storage layout is simple (`captures/clip_YYYYMMDD_HHMMSS.{mp4,json,jpg}`) for easy syncing/backups.
+### Setup
+1. `cd edge`
+2. `cp config.example.yaml config.yaml` (Edit settings: camera source, model path, etc.)
+3. `cp .env.example .env` (Add Supabase & Notification keys)
+4. `pip install -r requirements.txt`
+5. `python main.py --config config.yaml`
 
-## Quick reference commands
+## Supabase Setup (Backend)
 
+1. Create a Supabase project.
+2. Run `infra/supabase_schema.sql` in the SQL Editor to create the `clips` table and policies.
+3. Create a public storage bucket named `thumbnails`.
+4. Get your URL and Keys (Anon Key for Web, Service Role Key for Edge/Admin).
+
+## Quick Start
+
+**To run the Web Dashboard & Browser Capture:**
 ```bash
-# Edge
-pip install -r edge/requirements.txt
-python edge/main.py --config edge/config.yaml
-
-# Web
 cd web
 npm install
 npm run dev
+# Visit http://localhost:3000/capture to try the camera
+```
+
+**To run the Python Edge Capture:**
+```bash
+cd edge
+pip install -r requirements.txt
+python main.py --config config.yaml
 ```

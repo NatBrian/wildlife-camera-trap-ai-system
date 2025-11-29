@@ -30,5 +30,16 @@ create policy if not exists "Public read access" on public.clips
   for select using (true);
 -- No insert/update/delete policy needed because service role bypasses RLS; keep anon read-only.
 
--- Optional: create a storage bucket named "thumbnails" in the Supabase UI
+-- Optional: create a storage bucket named "clips" in the Supabase UI
 -- and mark it as public so the Next.js app can render images via URL.
+
+
+-- replace the existing policy
+
+-- drop policy if exists "Public read clips" on storage.objects;
+
+-- create policy "Public read clips"
+-- on storage.objects
+-- for select
+-- to public
+-- using (bucket_id = 'clips');
