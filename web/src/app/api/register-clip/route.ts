@@ -45,6 +45,45 @@ export async function POST(request: Request) {
         const bucket = process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET || "clips";
         const publicThumbnailUrl = `${supabaseUrl}/storage/v1/object/public/${bucket}/${thumbnailPath}`;
 
+        // 1.5. Check and rotate clips (Limit to 10)
+        const { count } = await supabaseAdmin
+            .from("clips")
+            .select("*", { count: "exact", head: true });
+
+        if (count !== null && count >= 10) {
+            // Fetch the oldest clip to delete
+            const { data: oldestClips } = await supabaseAdmin
+                .from("clips")
+                .select("id, local_video_path, thumbnail_url")
+                .order("started_at", { ascending: true })
+                .limit(count - 9); // Delete extras if somehow we went way over
+
+            if (oldestClips && oldestClips.length > 0) {
+                for (const clip of oldestClips) {
+                    // Extract paths for storage deletion
+                    const videoFile = clip.local_video_path;
+                    // thumbnail_url is full URL, need to extract path relative to bucket
+                    // e.g. .../public/clips/timestamp_id.jpg -> timestamp_id.jpg
+                    const thumbFile = clip.thumbnail_url.split(`/${bucket}/`).pop();
+
+                    const filesToDelete = [videoFile];
+                    if (thumbFile) filesToDelete.push(thumbFile);
+
+                    // Delete from Storage
+                    const { error: storageError } = await supabaseAdmin.storage
+                        .from(bucket)
+                        .remove(filesToDelete);
+
+                    if (storageError) {
+                        console.error("Failed to rotate/delete files:", storageError);
+                    }
+
+                    // Delete from DB
+                    await supabaseAdmin.from("clips").delete().eq("id", clip.id);
+                }
+            }
+        }
+
         // 2. Insert metadata into DB (bypassing RLS)
         const { data: clipData, error: dbError } = await supabaseAdmin
             .from("clips")
