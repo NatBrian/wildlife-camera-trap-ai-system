@@ -1,9 +1,9 @@
 export const DEFAULT_MODEL_CONFIG = {
-  name: "yolov8n",
-  modelUrl: "/models/best.onnx",
-  labelsUrl: "/models/labels.json",
+  name: "megadetector_v5a", // "ena24"
+  modelUrl: "/models/MDV6-yolov10-c.onnx", // "/models/my-ena24.onnx",
+  labelsUrl: "/models/labels.json", // "/models/labels_ena24.json",
   inputSize: 640,
-  confThreshold: 0.50,
+  confThreshold: 0.20,
   iouThreshold: 0.45,
   processEveryN: 2,
   silenceTimeoutMs: 4000,

@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type * as ort from "onnxruntime-web";
 
+declare global {
+  interface Window {
+    ort: typeof ort;
+  }
+}
+
 import { Detection } from "@/types";
 
 type Options = {
@@ -50,17 +56,30 @@ export function useYolo(options: Options): UseYoloResult {
 
     async function load() {
       try {
-        const ort = await import("onnxruntime-web");
+        // Load via script tag to avoid build issues with import.meta
+        if (typeof window !== "undefined" && !window.ort) {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.all.min.js";
+            script.onload = () => resolve(undefined);
+            script.onerror = () => reject(new Error("Failed to load onnxruntime-web"));
+            document.head.appendChild(script);
+          });
+        }
+
+        const ort = window.ort;
         ortRef.current = ort;
+
         // Prefer WebGPU if available, otherwise fall back to WASM.
-        const executionProviders: ort.InferenceSession.SessionOptions["executionProviders"] = [];
+        const executionProviders: string[] = [];
         if (options.preferBackend === "webgpu" && typeof navigator !== "undefined" && "gpu" in navigator) {
           executionProviders.push("webgpu");
         }
         executionProviders.push("wasm");
-        // Allow fetching wasm binaries from CDN if not bundled.
+
+        // Allow fetching wasm binaries from CDN (since we are loading JS from CDN)
         if (ort.env.wasm && !ort.env.wasm.wasmPaths) {
-          ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+          ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
         }
 
         const session = await ort.InferenceSession.create(options.modelUrl, {
