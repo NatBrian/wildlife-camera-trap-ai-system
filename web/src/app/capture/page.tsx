@@ -27,14 +27,9 @@ export default function CapturePage() {
       <CameraCapture />
 
       <div className="glass rounded-xl p-4 border border-white/10 text-sm text-slate-200 space-y-2">
-        <p className="font-semibold text-mint">Model files</p>
+        <p className="font-semibold text-mint">Instructions</p>
         <p>
-          Place an ONNX export (e.g., best.onnx) and a labels JSON under <code>/public/models</code>. The hook loads
-          <code>/models/best.onnx</code> and <code>/models/labels.json</code> by default.
-        </p>
-        <p>
-          For uploads, ensure your Supabase bucket allows anon writes (or use signed URLs/RPC) and that the
-          <code>clips</code> table has an insert policy for anon users if you keep direct inserts.
+          Ensure camera permissions are enabled. The system will automatically detect animals and record clips when they enter the frame.
         </p>
       </div>
     </div>

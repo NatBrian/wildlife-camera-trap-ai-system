@@ -35,8 +35,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </nav>
               </div>
               <div className="text-right text-sm text-slate-300">
-                <p>Metadata only • Videos stay on-device</p>
-                <p className="text-xs text-slate-400">Supabase free tier + Vercel</p>
+                <p>Wildlife Camera Trap System</p>
+                <p className="text-xs text-slate-400">Powered by YOLOv8 & SpeciesNet</p>
               </div>
             </div>
           </header>
