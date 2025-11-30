@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import { useYolo } from "@/hooks/useYolo";
+import { useClassifier } from "@/hooks/useClassifier";
 import { DEFAULT_DEVICE_ID, DEFAULT_MODEL_CONFIG } from "@/lib/modelConfig";
 import { uploadClipToSupabase } from "@/lib/uploadClip";
 import { Detection, SpeciesCounts } from "@/types";
@@ -49,6 +50,7 @@ export default function CameraCapture() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
   const inferenceCanvasRef = useRef<HTMLCanvasElement>(null);
+  const classifierCanvasRef = useRef<HTMLCanvasElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingRef = useRef(false);
@@ -76,6 +78,18 @@ export default function CameraCapture() {
     iouThreshold: DEFAULT_MODEL_CONFIG.iouThreshold,
     preferBackend: "webgpu",
   });
+
+  const { ready: classifierReady, runClassifier, error: classifierError } = useClassifier({
+    modelUrl: DEFAULT_MODEL_CONFIG.classifier?.modelUrl || "",
+    labelsUrl: DEFAULT_MODEL_CONFIG.classifier?.labelsUrl,
+    inputSize: DEFAULT_MODEL_CONFIG.classifier?.inputSize,
+    preferBackend: "webgpu",
+  });
+
+  // Log classifier ready state on every render
+  useEffect(() => {
+    console.log("[CameraCapture] classifierReady changed to:", classifierReady);
+  }, [classifierReady]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -306,6 +320,74 @@ export default function CameraCapture() {
         const allDetections = await runInference(imageData);
         // Keep only detections where the label is not "person" or "vehicle"
         const detections = allDetections.filter(d => d.label !== "person" && d.label !== "vehicle");
+
+        // 2-Stage Pipeline: Classify animals
+        console.log("[Pipeline] Classifier ready:", classifierReady, "| Total detections:", detections.length);
+        if (classifierReady && classifierCanvasRef.current) {
+          const animals = detections.filter(d => d.label === "animal");
+          console.log("[Pipeline] Found animals to classify:", animals.length);
+
+          const clsCanvas = classifierCanvasRef.current;
+          const clsCtx = clsCanvas.getContext("2d", { willReadFrequently: true });
+          const clsInputSize = DEFAULT_MODEL_CONFIG.classifier?.inputSize || 224;
+
+          if (clsCtx) {
+            // Ensure canvas is correct size
+            if (clsCanvas.width !== clsInputSize) {
+              clsCanvas.width = clsInputSize;
+              clsCanvas.height = clsInputSize;
+            }
+
+            for (const animal of animals) {
+              console.log("[Pipeline] Processing animal with box:", animal.box, "label:", animal.label);
+
+              // Crop from VIDEO (source resolution) for best quality
+              // animal.box is [x1, y1, x2, y2] in inputSize (640) coordinates.
+              // We need to map it back to video coordinates.
+              const scaleX = video.videoWidth / inputSize;
+              const scaleY = video.videoHeight / inputSize;
+
+              const x1 = Math.max(0, animal.box[0] * scaleX);
+              const y1 = Math.max(0, animal.box[1] * scaleY);
+              const w = (animal.box[2] - animal.box[0]) * scaleX;
+              const h = (animal.box[3] - animal.box[1]) * scaleY;
+
+              console.log("[Pipeline] Crop coords - x1:", x1, "y1:", y1, "w:", w, "h:", h);
+              console.log("[Pipeline] Video size:", video.videoWidth, "x", video.videoHeight, "| Scale:", scaleX, scaleY);
+
+              // Draw crop to classifier canvas (resized)
+              clsCtx.drawImage(video, x1, y1, w, h, 0, 0, clsInputSize, clsInputSize);
+              const cropData = clsCtx.getImageData(0, 0, clsInputSize, clsInputSize);
+
+              console.log("[Pipeline] Calling classifier with crop size:", cropData.width, "x", cropData.height);
+
+              // Run classifier
+              try {
+                const results = await runClassifier(cropData);
+                console.log("[Pipeline] Classifier returned:", results.length, "results");
+                if (results.length > 0) {
+                  console.log("[Pipeline] ✅ Classified as:", results[0].label, "(score:", results[0].score, "classId:", results[0].classId, ")");
+                  // Update label
+                  const oldLabel = animal.label;
+                  animal.label = results[0].label;
+                  console.log("[Pipeline] Label updated from '", oldLabel, "' to '", animal.label, "'");
+                  // Optional: Store species score?
+                } else {
+                  console.log("[Pipeline] ⚠️ No classification results returned");
+                }
+              } catch (err) {
+                console.error("[Pipeline] ❌ Classifier error:", err);
+              }
+            }
+          } else {
+            console.log("[Pipeline] ⚠️ No canvas context available");
+          }
+        } else {
+          if (!classifierReady) {
+            console.log("[Pipeline] ⚠️ Classifier not ready yet");
+          }
+        }
+
         detectionsRef.current = detections;
         const counts = toCounts(detections);
         setLiveCounts(counts);
@@ -343,12 +425,14 @@ export default function CameraCapture() {
     rafRef.current = requestAnimationFrame(() => loopRef.current?.());
   }, [
     autoRecord,
+    classifierReady,
     handleAutoRecording,
     inputSize,
     maxFileSizeMB,
     modelReady,
     processEveryN,
     resizeCanvases,
+    runClassifier,
     runInference,
     stopRecording,
   ]);
@@ -479,6 +563,7 @@ export default function CameraCapture() {
       <div className="glass rounded-2xl p-4 border border-white/10 space-y-3">
         <div className="flex flex-wrap gap-3 text-sm">
           <StatusPill label="Model" value={modelReady ? "Ready" : "Loading"} tone={modelReady ? "good" : "warn"} />
+          <StatusPill label="Classifier" value={classifierReady ? "Ready" : "Loading"} tone={classifierReady ? "good" : "warn"} />
           <StatusPill label="Camera" value={cameraReady ? "Streaming" : "Idle"} tone={cameraReady ? "good" : "warn"} />
           <StatusPill label="Recording" value={recording ? "On" : "Off"} tone={recording ? "warn" : "muted"} />
           <StatusPill label="FPS" value={fps ? `${fps}` : "—"} tone="muted" />
@@ -545,6 +630,7 @@ export default function CameraCapture() {
 
         {status ? <p className="text-sm text-slate-300">{status}</p> : null}
         {modelError ? <p className="text-sm text-red-400">Model error: {modelError}</p> : null}
+        {classifierError ? <p className="text-sm text-red-400">Classifier error: {classifierError}</p> : null}
         {isMounted && !SUPPORTED ? (
           <p className="text-sm text-red-400">
             Browser APIs not available here. Open this page in a browser to use camera + MediaRecorder.
@@ -560,6 +646,7 @@ export default function CameraCapture() {
         />
         <video ref={videoRef} className="hidden" muted playsInline />
         <canvas ref={inferenceCanvasRef} className="hidden" width={inputSize} height={inputSize} />
+        <canvas ref={classifierCanvasRef} className="hidden" width={224} height={224} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">

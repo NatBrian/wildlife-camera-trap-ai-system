@@ -53,25 +53,45 @@ python quantize_model.py
 *   **Input:** `web/public/models/speciesnet.onnx` (or `speciesnet.onnx` in current dir)
 *   **Output:** `web/public/models/speciesnet_quant.onnx`
 
-## Integration with Web App
+## Web App Integration
 
-To use this model in the web application (using `onnxruntime-web`):
+To use SpeciesNet in the web application, we implement a **Two-Stage Pipeline**:
 
-1.  **Move Files:**
-    Copy `speciesnet.onnx` and `speciesnet_labels.json` to your web application's public assets folder (e.g., `web/public/models/`).
+1.  **Detection (Stage 1):** Use a general purpose detector (MegaDetector v5 / YOLOv10) to find animals and generate bounding boxes.
+2.  **Classification (Stage 2):** Crop the detected animal regions and pass them to SpeciesNet to identify the specific species.
 
-2.  **Model Input Specifications:**
-    *   **Input Name:** `input` (or check model metadata)
-    *   **Input Shape:** `(1, 480, 480, 3)` (Batch, Height, Width, Channels)
-    *   **Pixel Values:** The model expects images with pixel values in the range `[0, 255]`. The EfficientNetV2 architecture typically includes internal preprocessing layers (rescaling/normalization), so you can pass standard RGB image data.
-    *   **Format:** Channels Last (NHWC), which matches the standard HTML Canvas/ImageData format.
+### Configuration
 
-3.  **Inference Logic:**
-    *   **Detection First:** Use a detector (like YOLO) to find the animal.
-    *   **Crop:** Crop the image to the detected bounding box.
-    *   **Resize:** Resize the crop to **480x480** pixels.
-    *   **Classify:** Pass the resized crop to SpeciesNet.
-    *   **Map Output:** The output is a probability vector. Map the index of the highest value to the name in `speciesnet_labels.json`.
+Update your `web/src/lib/modelConfig.ts` to include the classifier configuration:
+
+```typescript
+export const DEFAULT_MODEL_CONFIG = {
+  // Stage 1: Detector (MegaDetector)
+  name: "megadetector_v5a",
+  modelUrl: "/models/MDV6-yolov10-c.onnx",
+  labelsUrl: "/models/labels.json",
+  inputSize: 640,
+  confThreshold: 0.20,
+  
+  // Stage 2: Classifier (SpeciesNet)
+  classifier: {
+    modelUrl: "/models/speciesnet_quant.onnx",
+    labelsUrl: "/models/speciesnet_labels.json",
+    inputSize: 224, // Use 224 for speed, or 480 for max accuracy
+    topK: 1,
+  },
+  // ...
+};
+```
+
+### Inference Logic
+
+The `CameraCapture` component handles the pipeline:
+1.  **Detect:** Run YOLO inference on the full frame.
+2.  **Filter:** Select detections labeled "animal".
+3.  **Crop & Resize:** Crop the animal from the video feed and resize to the classifier's input size (e.g., 224x224).
+4.  **Classify:** Run SpeciesNet inference on the crop.
+5.  **Update:** Replace the generic "animal" label with the specific species name (e.g., "African Elephant").
 
 ## Files
 *   `convert_speciesnet_keras.py`: Script to download and convert the model.
