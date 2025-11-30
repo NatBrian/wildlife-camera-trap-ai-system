@@ -1,0 +1,7 @@
+tensorflow==2.20.0
+tf2onnx==1.16.1
+kagglehub
+tf_keras==2.20.1
+numpy>=1.26.0
+protobuf>=5.28.0
+onnxruntime

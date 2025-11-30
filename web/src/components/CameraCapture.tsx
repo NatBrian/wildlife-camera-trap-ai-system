@@ -25,8 +25,8 @@ const SUPPORTED = typeof window !== "undefined" && typeof navigator !== "undefin
 export default function CameraCapture() {
   const [isMounted, setIsMounted] = useState(false);
   const [deviceId, setDeviceId] = useState(DEFAULT_DEVICE_ID);
-  const [autoRecord, setAutoRecord] = useState(true);
-  const [autoUpload, setAutoUpload] = useState(true);
+  const [autoRecord, setAutoRecord] = useState(false);
+  const [autoUpload, setAutoUpload] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [recording, setRecording] = useState(false);
   const [liveCounts, setLiveCounts] = useState<SpeciesCounts>({});
