@@ -88,9 +88,12 @@ export const DEFAULT_MODEL_CONFIG = {
 
 The `CameraCapture` component handles the pipeline:
 1.  **Detect:** Run YOLO inference on the full frame.
-2.  **Filter:** Select detections labeled "animal".
-3.  **Crop & Resize:** Crop the animal from the video feed and resize to the classifier's input size (e.g., 224x224).
+2.  **Keyframe Capture:** Capture high-quality frames of detected animals during live recording.
+3.  **Crop & Resize:** Crop the animal from the captured frames and resize to the classifier's input size (480x480).
 4.  **Classify:** Run SpeciesNet inference on the crop.
+    - **Top-K Fallback:** Checks the top 5 results.
+    - **Blank Filtering:** Ignores "blank" labels if a valid species is found in the top 5 with sufficient confidence (> 0.1).
+    - **Generic Fallback:** If no specific species is found, falls back to the generic "animal" label to ensure no detections are lost.
 5.  **Update:** Replace the generic "animal" label with the specific species name (e.g., "African Elephant").
 
 ## Files

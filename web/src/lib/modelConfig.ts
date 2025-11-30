@@ -5,7 +5,7 @@ export const DEFAULT_MODEL_CONFIG = {
   inputSize: 640,
   confThreshold: 0.20,
   iouThreshold: 0.45,
-  processEveryN: 2,
+  processEveryN: 3,
   silenceTimeoutMs: 4000,
   classifier: {
     modelUrl: "/models/speciesnet_quant.onnx",

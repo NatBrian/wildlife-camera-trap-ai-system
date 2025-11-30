@@ -1,14 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type * as ort from "onnxruntime-web";
-
-declare global {
-  interface Window {
-    ort: typeof ort;
-  }
-}
-
+import * as ort from "onnxruntime-web";
 import { Detection } from "@/types";
 
 type Options = {
@@ -19,6 +12,7 @@ type Options = {
   iouThreshold?: number;
   topk?: number;
   preferBackend?: "webgpu" | "wasm";
+  useWorker?: boolean; // New flag to toggle worker usage
 };
 
 type UseYoloResult = {
@@ -30,148 +24,63 @@ type UseYoloResult = {
 };
 
 const DEFAULT_IOU = 0.45;
-const DEFAULT_CONF = 0.35;
+const DEFAULT_CONF = 0.25;
 const DEFAULT_TOPK = 50;
 
-/**
- * Lightweight YOLOv8 ONNX runtime hook for the browser.
- * Expects an ONNX export with layout matching ultralytics defaults.
- */
-export function useYolo(options: Options): UseYoloResult {
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [labels, setLabels] = useState<string[]>([]);
-  const sessionRef = useRef<ort.InferenceSession | null>(null);
-  const ortRef = useRef<typeof import("onnxruntime-web")>();
-  const inputNameRef = useRef<string>("images");
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
-
-  const inputSize = options.inputSize ?? 640;
-
-  useEffect(() => {
-    let canceled = false;
-    setReady(false);
-    setError(null);
-
-    async function load() {
-      try {
-        // Load via script tag to avoid build issues with import.meta
-        if (typeof window !== "undefined" && !window.ort) {
-          await new Promise((resolve, reject) => {
-            const script = document.createElement("script");
-            script.src = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.all.min.js";
-            script.onload = () => resolve(undefined);
-            script.onerror = () => reject(new Error("Failed to load onnxruntime-web"));
-            document.head.appendChild(script);
-          });
-        }
-
-        const ort = window.ort;
-        ortRef.current = ort;
-
-        // Prefer WebGPU if available, otherwise fall back to WASM.
-        const executionProviders: string[] = [];
-        if (options.preferBackend === "webgpu" && typeof navigator !== "undefined" && "gpu" in navigator) {
-          executionProviders.push("webgpu");
-        }
-        executionProviders.push("wasm");
-
-        // Allow fetching wasm binaries from CDN (since we are loading JS from CDN)
-        if (ort.env.wasm && !ort.env.wasm.wasmPaths) {
-          ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
-        }
-
-        const session = await ort.InferenceSession.create(options.modelUrl, {
-          executionProviders,
-        });
-
-        if (canceled) return;
-        sessionRef.current = session;
-        inputNameRef.current = session.inputNames[0];
-        setReady(true);
-      } catch (err) {
-        if (canceled) return;
-        setError((err as Error)?.message || "Failed to load model");
-      }
-    }
-
-    async function loadLabels() {
-      if (!options.labelsUrl) return;
-      try {
-        const res = await fetch(options.labelsUrl);
-        if (!res.ok) throw new Error(`Failed to fetch labels: ${res.statusText}`);
-        const data = (await res.json()) as string[];
-        if (!canceled) setLabels(data);
-      } catch (err) {
-        if (!canceled) setError((err as Error)?.message || "Failed to load labels");
-      }
-    }
-
-    load();
-    loadLabels();
-
-    return () => {
-      canceled = true;
-    };
-  }, [options.modelUrl, options.labelsUrl, options.preferBackend]);
-
-  const runInference = useCallback(
-    async (image: ImageData): Promise<Detection[]> => {
-      if (!sessionRef.current || !ortRef.current) throw new Error("Model is not ready");
-
-      const conf = optionsRef.current.confThreshold ?? DEFAULT_CONF;
-      const iou = optionsRef.current.iouThreshold ?? DEFAULT_IOU;
-      const topk = optionsRef.current.topk ?? DEFAULT_TOPK;
-
-      const tensor = imageDataToTensor(image, inputSize, ortRef.current.Tensor);
-      const outputs = await sessionRef.current.run({ [inputNameRef.current]: tensor });
-      const firstOutput = outputs[sessionRef.current.outputNames[0]];
-      if (!firstOutput) throw new Error("No output from model");
-      const detections = decodeDetections(firstOutput, labels, conf, iou, topk, inputSize);
-      return detections;
-    },
-    [inputSize, labels],
-  );
-
-  return { ready, error, labels, inputSize, runInference };
+// --- Main Thread Helper Functions (Duplicated from worker for now) ---
+function clamp(v: number, min: number, max: number) {
+  return Math.min(Math.max(v, min), max);
 }
 
-function imageDataToTensor(
-  image: ImageData,
-  inputSize: number,
-  TensorCtor: typeof ort.Tensor,
-): ort.Tensor {
-  const { data, width, height } = image;
-  const floatData = new Float32Array(3 * inputSize * inputSize);
-  // Assume incoming image is already resized to inputSize x inputSize.
-  for (let y = 0; y < inputSize; y += 1) {
-    for (let x = 0; x < inputSize; x += 1) {
-      const srcX = Math.floor((x / inputSize) * width);
-      const srcY = Math.floor((y / inputSize) * height);
-      const idx = (srcY * width + srcX) * 4;
-      const r = data[idx] / 255;
-      const g = data[idx + 1] / 255;
-      const b = data[idx + 2] / 255;
-      const dst = y * inputSize + x;
-      floatData[dst] = r;
-      floatData[inputSize * inputSize + dst] = g;
-      floatData[2 * inputSize * inputSize + dst] = b;
+function xywhToXyxy(x: number, y: number, w: number, h: number) {
+  const x1 = x - w / 2;
+  const y1 = y - h / 2;
+  const x2 = x + w / 2;
+  const y2 = y + h / 2;
+  return [x1, y1, x2, y2];
+}
+
+function iou(a: number[], b: number[]) {
+  const x1 = Math.max(a[0], b[0]);
+  const y1 = Math.max(a[1], b[1]);
+  const x2 = Math.min(a[2], b[2]);
+  const y2 = Math.min(a[3], b[3]);
+  const interArea = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const areaA = Math.max(0, a[2] - a[0]) * Math.max(0, a[3] - a[1]);
+  const areaB = Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  const union = areaA + areaB - interArea;
+  return union <= 0 ? 0 : interArea / union;
+}
+
+function nonMaxSuppression(detections: Detection[], iouThreshold: number) {
+  const sorted = [...detections].sort((a, b) => b.score - a.score);
+  const results: Detection[] = [];
+
+  while (sorted.length) {
+    const current = sorted.shift()!;
+    results.push(current);
+    const remaining: Detection[] = [];
+    for (const det of sorted) {
+      if (iou(current.box, det.box) < iouThreshold) {
+        remaining.push(det);
+      }
     }
+    sorted.splice(0, sorted.length, ...remaining);
   }
-  return new TensorCtor("float32", floatData, [1, 3, inputSize, inputSize]);
+
+  return results;
 }
 
 function decodeDetections(
-  output: ort.Tensor,
+  output: any,
   labels: string[],
   confThreshold: number,
   iouThreshold: number,
   topk: number,
-  inputSize: number,
+  inputSize: number
 ): Detection[] {
   const dims = output.dims;
-  const data = output.data as Float32Array;
+  const data = output.data;
 
   if (!dims.length) return [];
 
@@ -180,7 +89,6 @@ function decodeDetections(
   let channelsFirst = false;
 
   // Handle YOLOv10 format: [1, 300, 6] -> [x1, y1, x2, y2, score, class]
-  // This output is post-processed and does not require NMS.
   if (dims.length === 3 && dims[2] === 6) {
     const numDetections = dims[1];
     const detections: Detection[] = [];
@@ -213,12 +121,12 @@ function decodeDetections(
   // Handle both (1, channels, anchors) and (1, anchors, values) layouts.
   if (dims.length === 3) {
     if (dims[1] > dims[2]) {
-      // [1, anchors, values] - e.g. [1, 8400, 84]
+      // [1, anchors, values]
       anchors = dims[1];
       values = dims[2];
       channelsFirst = false;
     } else {
-      // [1, values, anchors] - e.g. [1, 84, 8400]
+      // [1, values, anchors]
       anchors = dims[2];
       values = dims[1];
       channelsFirst = true;
@@ -287,45 +195,215 @@ function decodeDetections(
   return nonMaxSuppression(detections, iouThreshold).slice(0, topk);
 }
 
-function xywhToXyxy(x: number, y: number, w: number, h: number): [number, number, number, number] {
-  const x1 = x - w / 2;
-  const y1 = y - h / 2;
-  const x2 = x + w / 2;
-  const y2 = y + h / 2;
-  return [x1, y1, x2, y2];
-}
+let tensorBuffer: Float32Array | null = null;
 
-function clamp(v: number, min: number, max: number): number {
-  return Math.min(Math.max(v, min), max);
-}
+function imageDataToTensor(data: Uint8ClampedArray, width: number, height: number, inputSize: number) {
+  const totalPixels = inputSize * inputSize;
+  const tensorSize = 3 * totalPixels;
 
-function nonMaxSuppression(detections: Detection[], iouThreshold: number): Detection[] {
-  const sorted = [...detections].sort((a, b) => b.score - a.score);
-  const results: Detection[] = [];
+  if (!tensorBuffer || tensorBuffer.length !== tensorSize) {
+    tensorBuffer = new Float32Array(tensorSize);
+  }
+  const floatData = tensorBuffer;
 
-  while (sorted.length) {
-    const current = sorted.shift()!;
-    results.push(current);
-    const remaining: Detection[] = [];
-    for (const det of sorted) {
-      if (iou(current.box, det.box) < iouThreshold) {
-        remaining.push(det);
+  if (width === inputSize && height === inputSize) {
+    for (let i = 0; i < totalPixels; i++) {
+      const base = i * 4;
+      const r = data[base] / 255;
+      const g = data[base + 1] / 255;
+      const b = data[base + 2] / 255;
+      floatData[i] = r;
+      floatData[totalPixels + i] = g;
+      floatData[2 * totalPixels + i] = b;
+    }
+  } else {
+    for (let y = 0; y < inputSize; y += 1) {
+      for (let x = 0; x < inputSize; x += 1) {
+        const srcX = Math.floor((x / inputSize) * width);
+        const srcY = Math.floor((y / inputSize) * height);
+        const idx = (srcY * width + srcX) * 4;
+        const r = data[idx] / 255;
+        const g = data[idx + 1] / 255;
+        const b = data[idx + 2] / 255;
+        const dst = y * inputSize + x;
+        floatData[dst] = r;
+        floatData[inputSize * inputSize + dst] = g;
+        floatData[2 * inputSize * inputSize + dst] = b;
       }
     }
-    sorted.splice(0, sorted.length, ...remaining);
   }
-
-  return results;
+  return new ort.Tensor("float32", floatData, [1, 3, inputSize, inputSize]);
 }
 
-function iou(a: [number, number, number, number], b: [number, number, number, number]): number {
-  const x1 = Math.max(a[0], b[0]);
-  const y1 = Math.max(a[1], b[1]);
-  const x2 = Math.min(a[2], b[2]);
-  const y2 = Math.min(a[3], b[3]);
-  const interArea = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-  const areaA = Math.max(0, a[2] - a[0]) * Math.max(0, a[3] - a[1]);
-  const areaB = Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
-  const union = areaA + areaB - interArea;
-  return union <= 0 ? 0 : interArea / union;
+/**
+ * Flexible YOLOv8 hook: Supports both Web Worker (default) and Main Thread execution.
+ */
+export function useYolo(options: Options): UseYoloResult {
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [labels, setLabels] = useState<string[]>([]);
+
+  // Worker State
+  const workerRef = useRef<Worker | null>(null);
+  const pendingRequests = useRef<Map<string, { resolve: (d: Detection[]) => void; reject: (e: Error) => void }>>(new Map());
+
+  // Main Thread State
+  const sessionRef = useRef<ort.InferenceSession | null>(null);
+
+  const inputSize = options.inputSize ?? 640;
+  const useWorker = options.useWorker ?? true;
+
+  useEffect(() => {
+    setReady(false);
+    setError(null);
+    const abortController = new AbortController();
+
+    const load = async () => {
+      try {
+        // Load Labels
+        if (options.labelsUrl) {
+          const res = await fetch(options.labelsUrl, { signal: abortController.signal });
+          if (res.ok) {
+            const loadedLabels = await res.json();
+            setLabels(loadedLabels);
+          }
+        }
+
+        if (useWorker) {
+          // --- WORKER MODE ---
+          const worker = new Worker("/yolo.worker.js");
+          workerRef.current = worker;
+
+          worker.onmessage = (e) => {
+            const { type, payload, id } = e.data;
+            if (type === "ready") {
+              setReady(true);
+              if (payload.labels && payload.labels.length) setLabels(payload.labels);
+            } else if (type === "error") {
+              if (id && pendingRequests.current.has(id)) {
+                pendingRequests.current.get(id)?.reject(new Error(payload));
+                pendingRequests.current.delete(id);
+              } else {
+                setError(payload);
+              }
+            } else if (type === "result") {
+              if (id && pendingRequests.current.has(id)) {
+                pendingRequests.current.get(id)?.resolve(payload);
+                pendingRequests.current.delete(id);
+              }
+            }
+          };
+
+          worker.onerror = (err) => {
+            console.error("Worker error:", err);
+            setError("Worker error occurred");
+          };
+
+          worker.postMessage({
+            type: "load",
+            payload: {
+              modelUrl: options.modelUrl,
+              labelsUrl: options.labelsUrl,
+              preferBackend: options.preferBackend,
+              config: {
+                inputSize: options.inputSize,
+                confThreshold: options.confThreshold ?? DEFAULT_CONF,
+                iouThreshold: options.iouThreshold ?? DEFAULT_IOU,
+                topk: options.topk ?? DEFAULT_TOPK,
+              },
+            },
+          });
+
+        } else {
+          // --- MAIN THREAD MODE ---
+          ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
+
+          const executionProviders = ["wasm"];
+          if (options.preferBackend === "webgpu" && typeof navigator !== "undefined" && (navigator as any).gpu) {
+            executionProviders.unshift("webgpu");
+          }
+
+          const session = await ort.InferenceSession.create(options.modelUrl, {
+            executionProviders,
+          });
+          sessionRef.current = session;
+          setReady(true);
+        }
+
+      } catch (err) {
+        if (!abortController.signal.aborted) {
+          console.error("Failed to load model:", err);
+          setError((err as Error).message);
+        }
+      }
+    };
+
+    load();
+
+    return () => {
+      abortController.abort();
+      if (workerRef.current) {
+        workerRef.current.terminate();
+        workerRef.current = null;
+      }
+      sessionRef.current = null;
+      pendingRequests.current.clear();
+    };
+  }, [options.modelUrl, options.labelsUrl, options.preferBackend, options.inputSize, options.confThreshold, options.iouThreshold, options.topk, useWorker]);
+
+  const runInference = useCallback(
+    async (image: ImageData): Promise<Detection[]> => {
+      if (!ready) throw new Error("Model is not ready");
+
+      if (useWorker) {
+        // --- WORKER INFERENCE ---
+        if (!workerRef.current) throw new Error("Worker not initialized");
+        const id = Math.random().toString(36).substring(7);
+        return new Promise<Detection[]>((resolve, reject) => {
+          pendingRequests.current.set(id, { resolve, reject });
+          const data = image.data;
+          workerRef.current?.postMessage(
+            {
+              type: "detect",
+              payload: {
+                data: data,
+                width: image.width,
+                height: image.height,
+              },
+              id,
+            },
+            [data.buffer]
+          );
+        });
+
+      } else {
+        // --- MAIN THREAD INFERENCE ---
+        if (!sessionRef.current) throw new Error("Session not initialized");
+
+        try {
+          const tensor = imageDataToTensor(image.data, image.width, image.height, inputSize);
+          const inputName = sessionRef.current.inputNames[0];
+          const outputNames = sessionRef.current.outputNames;
+
+          const outputs = await sessionRef.current.run({ [inputName]: tensor });
+          const firstOutput = outputs[outputNames[0]];
+
+          return decodeDetections(
+            firstOutput,
+            labels,
+            options.confThreshold ?? DEFAULT_CONF,
+            options.iouThreshold ?? DEFAULT_IOU,
+            options.topk ?? DEFAULT_TOPK,
+            inputSize
+          );
+        } catch (e) {
+          console.error("Inference failed:", e);
+          throw e;
+        }
+      }
+    },
+    [ready, useWorker, inputSize, labels, options.confThreshold, options.iouThreshold, options.topk]
+  );
+
+  return { ready, error, labels, inputSize, runInference };
 }

@@ -48,6 +48,8 @@ A Next.js application.
 - **In-Browser Capture** (`/capture`): 
   - Turns any laptop or phone into a camera trap.
   - Runs **YOLOv8 via ONNX Runtime Web** directly in the browser (Client-side only).
+  - **Optimized Pipeline**: Uses efficient keyframe capture during live detection for accurate post-processing without video seeking.
+  - **CDN Powered**: Loads AI engines via jsDelivr CDN for reliable performance.
   - Detects animals, auto-records clips, and uploads them to Supabase.
   - Configurable models (e.g., `my-ena24.onnx`, `MDV6-yolov10-c.onnx`) in `public/models`.
 

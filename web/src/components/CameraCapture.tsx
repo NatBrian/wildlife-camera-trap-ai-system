@@ -7,9 +7,11 @@ import { useYolo } from "@/hooks/useYolo";
 import { useClassifier } from "@/hooks/useClassifier";
 import { DEFAULT_DEVICE_ID, DEFAULT_MODEL_CONFIG } from "@/lib/modelConfig";
 import { uploadClipToSupabase } from "@/lib/uploadClip";
+import { classifyCapturedFrames } from "@/lib/processRecordedClip";
 import { Detection, SpeciesCounts } from "@/types";
 
 type RecordedClip = {
+  id: string; // Unique ID
   blob: Blob;
   url: string;
   thumbnail?: Blob | null;
@@ -17,6 +19,12 @@ type RecordedClip = {
   endedAt: Date;
   speciesCounts: SpeciesCounts;
   framesWithAnimals: number;
+  classificationComplete?: boolean;
+  classificationError?: string | null;
+  classificationProgress?: string;
+  uploadStatus: "idle" | "uploading" | "success" | "error";
+  uploadError?: string;
+  videoUrl?: string;
 };
 
 type UploadState = "idle" | "uploading" | "success" | "error";
@@ -33,11 +41,13 @@ export default function CameraCapture() {
   const [liveCounts, setLiveCounts] = useState<SpeciesCounts>({});
   const [maxCounts, setMaxCounts] = useState<SpeciesCounts>({});
   const [status, setStatus] = useState<string | null>(null);
-  const [recordedClip, setRecordedClip] = useState<RecordedClip | null>(null);
-  const [uploadState, setUploadState] = useState<UploadState>("idle");
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadedUrls, setUploadedUrls] = useState<{ videoUrl?: string; thumbnailUrl?: string } | null>(null);
+  const [captures, setCaptures] = useState<RecordedClip[]>([]);
   const [fps, setFps] = useState<number>(0);
+
+  // Helper to update a specific clip by ID
+  const updateCapture = useCallback((id: string, updates: Partial<RecordedClip>) => {
+    setCaptures(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
+  }, []);
 
   // Settings
   const [maxFileSizeMB, setMaxFileSizeMB] = useState(45);
@@ -47,6 +57,7 @@ export default function CameraCapture() {
   const [currentSizeMB, setCurrentSizeMB] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
 
+  const detectionTimestampsRef = useRef<number[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
   const inferenceCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -64,20 +75,29 @@ export default function CameraCapture() {
   const loopStartedRef = useRef(false);
   const lastFrameTimeRef = useRef<number | null>(null);
   const lastDetectionTimeRef = useRef<number | null>(null);
-  const loopRef = useRef<() => Promise<void>>();
+  const loopRef = useRef<() => void>();
   const bestThumbnailRef = useRef<Blob | null>(null);
+  const lastFpsUpdateRef = useRef<number>(0);
+  const lastSizeUpdateRef = useRef<number>(0);
+  const lastEmittedCountsRef = useRef<string>("");
+  const keyFramesRef = useRef<{ imageData: ImageData; detections: Detection[] }[]>([]);
+  const lastKeyFrameTimeRef = useRef<number>(0);
 
   const processEveryN = DEFAULT_MODEL_CONFIG.processEveryN ?? 2;
   const silenceTimeoutMs = DEFAULT_MODEL_CONFIG.silenceTimeoutMs ?? 4000;
 
-  const { ready: modelReady, error: modelError, inputSize, runInference } = useYolo({
+  // 1. Live Camera Model (Main Thread for speed)
+  const { ready: modelReady, error: modelError, inputSize, runInference: runLiveInference } = useYolo({
     modelUrl: DEFAULT_MODEL_CONFIG.modelUrl,
     labelsUrl: DEFAULT_MODEL_CONFIG.labelsUrl,
     inputSize: DEFAULT_MODEL_CONFIG.inputSize,
     confThreshold: DEFAULT_MODEL_CONFIG.confThreshold,
     iouThreshold: DEFAULT_MODEL_CONFIG.iouThreshold,
     preferBackend: "webgpu",
+    useWorker: false, // Run on main thread for live view
   });
+
+
 
   const { ready: classifierReady, runClassifier, error: classifierError } = useClassifier({
     modelUrl: DEFAULT_MODEL_CONFIG.classifier?.modelUrl || "",
@@ -146,9 +166,8 @@ export default function CameraCapture() {
 
   const processUpload = useCallback(
     async (clip: RecordedClip) => {
-      setUploadState("uploading");
-      setUploadError(null);
-      setStatus("Uploading clip to Supabase...");
+      updateCapture(clip.id, { uploadStatus: "uploading", uploadError: undefined });
+      // setStatus("Uploading clip..."); // Optional: Global status might be confusing with multiple uploads
       try {
         const result = await uploadClipToSupabase({
           videoBlob: clip.blob,
@@ -159,16 +178,12 @@ export default function CameraCapture() {
           speciesCounts: clip.speciesCounts,
           framesWithAnimals: clip.framesWithAnimals,
         });
-        setUploadState("success");
-        setUploadedUrls(result);
-        setStatus("Upload complete.");
+        updateCapture(clip.id, { uploadStatus: "success", videoUrl: result.videoUrl });
       } catch (err) {
-        setUploadState("error");
-        setUploadError((err as Error)?.message || "Upload failed");
-        setStatus(null);
+        updateCapture(clip.id, { uploadStatus: "error", uploadError: (err as Error)?.message });
       }
     },
-    [deviceId],
+    [deviceId, updateCapture]
   );
 
   const startRecording = useCallback(() => {
@@ -200,6 +215,9 @@ export default function CameraCapture() {
     chunksRef.current = [];
     maxSpeciesCountsRef.current = {};
     framesWithAnimalsRef.current = 0;
+    detectionTimestampsRef.current = [];
+    keyFramesRef.current = [];
+    lastKeyFrameTimeRef.current = 0;
     startTimeRef.current = new Date();
     bestThumbnailRef.current = null; // Reset best thumbnail
     setCurrentSizeMB(0);
@@ -213,10 +231,11 @@ export default function CameraCapture() {
       const url = URL.createObjectURL(blob);
       if (!displayCanvasRef.current) return;
 
-      // Use the captured "best" thumbnail, or fallback to current frame if none was captured
       const thumb = bestThumbnailRef.current || await canvasToJpeg(displayCanvasRef.current);
+      const id = Date.now().toString(); // Generate ID
 
       const clip: RecordedClip = {
+        id,
         blob,
         url,
         thumbnail: thumb,
@@ -224,14 +243,61 @@ export default function CameraCapture() {
         endedAt: new Date(),
         speciesCounts: { ...maxSpeciesCountsRef.current },
         framesWithAnimals: framesWithAnimalsRef.current,
+        classificationComplete: false,
+        classificationError: null,
+        uploadStatus: "idle",
       };
-      setRecordedClip(clip);
-      setMaxCounts({ ...maxSpeciesCountsRef.current });
-      setUploadState("idle");
-      setStatus("Clip recorded.");
 
-      if (autoUpload) {
-        processUpload(clip);
+      // Add to list immediately
+      setCaptures((prev) => [clip, ...prev]);
+      setMaxCounts({ ...maxSpeciesCountsRef.current });
+      setStatus("Clip recorded. Processing in background...");
+
+      // Start Async Classification
+      if (classifierReady) {
+        console.log(`[Capture ${id}] Starting classification`);
+
+        const runClassification = async () => {
+          if (keyFramesRef.current.length > 0) {
+            console.log(`[Capture ${id}] Using ${keyFramesRef.current.length} captured frames`);
+            return classifyCapturedFrames(
+              keyFramesRef.current,
+              runClassifier,
+              DEFAULT_MODEL_CONFIG.classifier?.inputSize || 480,
+              (current, total) => {
+                updateCapture(id, { classificationProgress: `(${current}/${total})` });
+              }
+            );
+          } else {
+            console.log(`[Capture ${id}] No captured frames to classify.`);
+            return {};
+          }
+        };
+
+        runClassification().then((classifiedCounts) => {
+          console.log(`[Capture ${id}] Complete`);
+          updateCapture(id, {
+            speciesCounts: classifiedCounts,
+            classificationComplete: true,
+            classificationProgress: undefined
+          });
+
+          // Auto Upload (using the fresh counts)
+          if (autoUpload) {
+            processUpload({ ...clip, speciesCounts: classifiedCounts });
+          }
+        }).catch((err) => {
+          console.error(`[Capture ${id}] Failed`, err);
+          updateCapture(id, {
+            classificationError: err.message,
+            classificationComplete: true,
+            classificationProgress: undefined
+          });
+        });
+      } else {
+        // No classifier, just mark complete
+        updateCapture(id, { classificationComplete: true, classificationError: "Classifier not ready" });
+        if (autoUpload) processUpload(clip);
       }
     };
 
@@ -240,7 +306,7 @@ export default function CameraCapture() {
     recordingRef.current = true;
     setRecording(true);
     setStatus("Recording...");
-  }, [autoUpload, bitrate, processUpload, targetFps]);
+  }, [autoUpload, bitrate, classifierReady, inputSize, processUpload, runClassifier, runLiveInference, targetFps]);
 
   const stopRecording = useCallback(() => {
     if (!recordingRef.current || !recorderRef.current) return;
@@ -267,7 +333,7 @@ export default function CameraCapture() {
     [silenceTimeoutMs, startRecording, stopRecording],
   );
 
-  const loop = useCallback(async () => {
+  const loop = useCallback(() => {
     const video = videoRef.current;
     const displayCanvas = displayCanvasRef.current;
     const inferCanvas = inferenceCanvasRef.current;
@@ -289,151 +355,113 @@ export default function CameraCapture() {
       const delta = now - lastFrameTimeRef.current;
       if (delta > 0) {
         const currentFps = 1000 / delta;
-        setFps((prev) => Math.round(0.8 * prev + 0.2 * currentFps));
+        // Throttle FPS updates to avoid excessive re-renders (every ~500ms)
+        if (!lastFpsUpdateRef.current || now - lastFpsUpdateRef.current > 500) {
+          setFps(Math.round(currentFps));
+          lastFpsUpdateRef.current = now;
+        }
       }
     }
     lastFrameTimeRef.current = now;
 
     // File size monitoring
     if (recordingRef.current && startTimeRef.current) {
-      // Estimate based on actual chunks if available, or fallback to bitrate
-      const currentBlobSize = chunksRef.current.reduce((acc, chunk) => acc + chunk.size, 0);
-      const sizeMB = currentBlobSize / (1024 * 1024);
-      setCurrentSizeMB(sizeMB);
+      // Throttle size updates (every ~1000ms)
+      if (!lastSizeUpdateRef.current || now - lastSizeUpdateRef.current > 1000) {
+        const currentBlobSize = chunksRef.current.reduce((acc, chunk) => acc + chunk.size, 0);
+        const sizeMB = currentBlobSize / (1024 * 1024);
+        setCurrentSizeMB(sizeMB);
+        lastSizeUpdateRef.current = now;
 
-      if (sizeMB >= maxFileSizeMB) {
-        console.log("Max file size reached, stopping recording.");
-        stopRecording();
-        // If animal is still there, the next loop iteration will restart recording
-        // because recordingRef.current is now false, but detections might be > 0
+        if (sizeMB >= maxFileSizeMB) {
+          console.log("Max file size reached, stopping recording.");
+          stopRecording();
+        }
       }
     }
 
     frameCounterRef.current += 1;
     const shouldProcess = frameCounterRef.current % processEveryN === 0;
 
-    if (shouldProcess && modelReady && !isProcessingRef.current && video.videoWidth && video.videoHeight) {
+    // Run inference asynchronously without blocking the render loop
+    const runInferenceEnabled = true;
+    if (runInferenceEnabled && shouldProcess && modelReady && !isProcessingRef.current && video.videoWidth && video.videoHeight) {
       isProcessingRef.current = true;
-      try {
-        inferCtx.drawImage(video, 0, 0, inputSize, inputSize);
-        const imageData = inferCtx.getImageData(0, 0, inputSize, inputSize);
-        const allDetections = await runInference(imageData);
-        // Keep only detections where the label is not "person" or "vehicle"
-        const detections = allDetections.filter(d => d.label !== "person" && d.label !== "vehicle");
 
-        // 2-Stage Pipeline: Classify animals
-        console.log("[Pipeline] Classifier ready:", classifierReady, "| Total detections:", detections.length);
-        if (classifierReady && classifierCanvasRef.current) {
-          const animals = detections.filter(d => d.label === "animal");
-          console.log("[Pipeline] Found animals to classify:", animals.length);
+      // Capture image data synchronously to ensure it matches current frame
+      inferCtx.drawImage(video, 0, 0, inputSize, inputSize);
+      const imageData = inferCtx.getImageData(0, 0, inputSize, inputSize);
 
-          const clsCanvas = classifierCanvasRef.current;
-          const clsCtx = clsCanvas.getContext("2d", { willReadFrequently: true });
-          const clsInputSize = DEFAULT_MODEL_CONFIG.classifier?.inputSize || 224;
+      // Fire and forget inference
+      runLiveInference(imageData)
+        .then((allDetections) => {
+          const detections = allDetections.filter(d => d.label !== "person" && d.label !== "vehicle");
+          detectionsRef.current = detections;
+          const counts = toCounts(detections);
 
-          if (clsCtx) {
-            // Ensure canvas is correct size
-            if (clsCanvas.width !== clsInputSize) {
-              clsCanvas.width = clsInputSize;
-              clsCanvas.height = clsInputSize;
-            }
+          // Only update state if counts changed to avoid re-renders
+          const countsStr = JSON.stringify(counts);
+          if (countsStr !== lastEmittedCountsRef.current) {
+            setLiveCounts(counts);
+            lastEmittedCountsRef.current = countsStr;
+          }
 
-            for (const animal of animals) {
-              console.log("[Pipeline] Processing animal with box:", animal.box, "label:", animal.label);
+          if (detections.length) {
+            lastDetectionTimeRef.current = Date.now();
+            if (recordingRef.current) {
+              framesWithAnimalsRef.current += 1;
 
-              // Crop from VIDEO (source resolution) for best quality
-              // animal.box is [x1, y1, x2, y2] in inputSize (640) coordinates.
-              // We need to map it back to video coordinates.
-              const scaleX = video.videoWidth / inputSize;
-              const scaleY = video.videoHeight / inputSize;
+              // Store timestamp relative to start time
+              if (startTimeRef.current) {
+                const timeSinceStart = Date.now() - startTimeRef.current.getTime();
+                detectionTimestampsRef.current.push(timeSinceStart);
+              }
 
-              const x1 = Math.max(0, animal.box[0] * scaleX);
-              const y1 = Math.max(0, animal.box[1] * scaleY);
-              const w = (animal.box[2] - animal.box[0]) * scaleX;
-              const h = (animal.box[3] - animal.box[1]) * scaleY;
+              // Capture keyframe for post-processing (max 1 per second)
+              if (now - lastKeyFrameTimeRef.current > 1000) {
+                keyFramesRef.current.push({
+                  imageData: imageData,
+                  detections: detections
+                });
+                lastKeyFrameTimeRef.current = now;
+              }
 
-              console.log("[Pipeline] Crop coords - x1:", x1, "y1:", y1, "w:", w, "h:", h);
-              console.log("[Pipeline] Video size:", video.videoWidth, "x", video.videoHeight, "| Scale:", scaleX, scaleY);
+              bumpSpeciesMax(maxSpeciesCountsRef.current, counts);
 
-              // Draw crop to classifier canvas (resized)
-              clsCtx.drawImage(video, x1, y1, w, h, 0, 0, clsInputSize, clsInputSize);
-              const cropData = clsCtx.getImageData(0, 0, clsInputSize, clsInputSize);
-
-              console.log("[Pipeline] Calling classifier with crop size:", cropData.width, "x", cropData.height);
-
-              // Run classifier
-              try {
-                const results = await runClassifier(cropData);
-                console.log("[Pipeline] Classifier returned:", results.length, "results");
-                if (results.length > 0) {
-                  console.log("[Pipeline] ✅ Classified as:", results[0].label, "(score:", results[0].score, "classId:", results[0].classId, ")");
-                  // Update label
-                  const oldLabel = animal.label;
-                  animal.label = results[0].label;
-                  console.log("[Pipeline] Label updated from '", oldLabel, "' to '", animal.label, "'");
-                  // Optional: Store species score?
-                } else {
-                  console.log("[Pipeline] ⚠️ No classification results returned");
-                }
-              } catch (err) {
-                console.error("[Pipeline] ❌ Classifier error:", err);
+              if (!bestThumbnailRef.current && displayCanvasRef.current) {
+                canvasToJpeg(displayCanvasRef.current).then(blob => {
+                  if (blob && recordingRef.current) bestThumbnailRef.current = blob;
+                });
               }
             }
-          } else {
-            console.log("[Pipeline] ⚠️ No canvas context available");
           }
-        } else {
-          if (!classifierReady) {
-            console.log("[Pipeline] ⚠️ Classifier not ready yet");
-          }
-        }
 
-        detectionsRef.current = detections;
-        const counts = toCounts(detections);
-        setLiveCounts(counts);
-        if (detections.length) {
-          lastDetectionTimeRef.current = Date.now();
-          if (recordingRef.current) {
-            framesWithAnimalsRef.current += 1;
-            bumpSpeciesMax(maxSpeciesCountsRef.current, counts);
-
-            // Capture "best" thumbnail: currently just the first frame with an animal
-            if (!bestThumbnailRef.current && displayCanvasRef.current) {
-              // We need to clone the canvas or capture blob immediately
-              // Since canvasToJpeg is async, we fire and forget (or await if we want to be safe, but loop is async)
-              canvasToJpeg(displayCanvasRef.current).then(blob => {
-                if (blob && recordingRef.current) bestThumbnailRef.current = blob;
-              });
-            }
+          if (autoRecord) {
+            handleAutoRecording(detections.length > 0);
           }
-        }
-        if (autoRecord) {
-          handleAutoRecording(detections.length > 0);
-        }
-      } catch (err) {
-        setStatus((err as Error)?.message || "Inference failed");
-      } finally {
-        isProcessingRef.current = false;
-      }
+        })
+        .catch((err) => {
+          setStatus((err as Error)?.message || "Inference failed");
+        })
+        .finally(() => {
+          isProcessingRef.current = false;
+        });
     }
 
     if (displayCtx && detectionsRef.current.length) {
       drawDetections(displayCtx, detectionsRef.current, displayCanvas.width / inputSize, displayCanvas.height / inputSize);
     }
 
-    // LoopRef pattern: Always call the latest loop function
     rafRef.current = requestAnimationFrame(() => loopRef.current?.());
   }, [
     autoRecord,
-    classifierReady,
     handleAutoRecording,
     inputSize,
     maxFileSizeMB,
     modelReady,
     processEveryN,
     resizeCanvases,
-    runClassifier,
-    runInference,
+    runLiveInference,
     stopRecording,
   ]);
 
@@ -456,10 +484,6 @@ export default function CameraCapture() {
     // Start the loop via the ref
     rafRef.current = requestAnimationFrame(() => loopRef.current?.());
   }, [cameraReady, modelReady]); // Removed 'loop' from deps to prevent double-start logic issues
-
-  const handleManualUpload = useCallback(() => {
-    if (recordedClip) processUpload(recordedClip);
-  }, [processUpload, recordedClip]);
 
   const detectionSummary = useMemo(
     () =>
@@ -568,6 +592,7 @@ export default function CameraCapture() {
           <StatusPill label="Recording" value={recording ? "On" : "Off"} tone={recording ? "warn" : "muted"} />
           <StatusPill label="FPS" value={fps ? `${fps}` : "—"} tone="muted" />
           <StatusPill label="Detections" value={detectionSummary || "None"} tone="muted" />
+          <StatusPill label="Classifier (post-rec)" value={classifierReady ? "Ready" : "Loading"} tone={classifierReady ? "good" : "warn"} />
         </div>
 
         {recording && (
@@ -680,36 +705,58 @@ export default function CameraCapture() {
           )}
         </div>
 
-        <div className="glass rounded-xl p-4 border border-white/10 space-y-2">
-          <h3 className="font-semibold text-mint">Recorded clip</h3>
-          {recordedClip ? (
-            <div className="space-y-2">
-              <p className="text-sm text-slate-300">
-                {recordedClip.startedAt.toLocaleTimeString()} → {recordedClip.endedAt.toLocaleTimeString()}
-              </p>
-              <video src={recordedClip.url} controls className="w-full rounded-lg border border-white/10" />
-              <div className="flex gap-2">
-                {uploadState !== "success" && (
-                  <button
-                    type="button"
-                    onClick={handleManualUpload}
-                    disabled={uploadState === "uploading"}
-                    className="px-3 py-2 rounded-lg bg-mint text-night font-semibold disabled:opacity-50"
-                  >
-                    {uploadState === "uploading" ? "Uploading..." : "Upload to Supabase"}
-                  </button>
+        <div className="glass rounded-xl p-4 border border-white/10 space-y-4">
+          <h3 className="font-semibold text-mint">Recent Captures ({captures.length})</h3>
+
+          <div className="space-y-6">
+            {captures.map((clip) => (
+              <div key={clip.id} className="border-b border-white/10 pb-4 last:border-0">
+                <div className="flex justify-between text-sm text-slate-400 mb-2">
+                  <span>{clip.startedAt.toLocaleTimeString()}</span>
+                  <span>{clip.framesWithAnimals} frames w/ animals</span>
+                </div>
+
+                <video src={clip.url} controls className="w-full rounded-lg border border-white/10 mb-2" />
+
+                {/* Status Row */}
+                <div className="flex flex-wrap gap-3 items-center text-sm">
+                  {/* Classification Status */}
+                  {!clip.classificationComplete ? (
+                    <span className="text-amber-300 flex items-center gap-1">
+                      <span className="animate-spin">⏳</span> Classifying {clip.classificationProgress}
+                    </span>
+                  ) : clip.classificationError ? (
+                    <span className="text-red-400">❌ {clip.classificationError}</span>
+                  ) : (
+                    <span className="text-mint">✅ Classified</span>
+                  )}
+
+                  {/* Upload Status */}
+                  {clip.uploadStatus === "uploading" && <span className="text-blue-300">☁️ Uploading...</span>}
+                  {clip.uploadStatus === "success" && <span className="text-mint">☁️ Uploaded</span>}
+                  {clip.uploadStatus === "error" && <span className="text-red-400">⚠️ Upload Failed</span>}
+
+                  {/* Manual Upload Button */}
+                  {clip.uploadStatus !== "success" && clip.uploadStatus !== "uploading" && (
+                    <button onClick={() => processUpload(clip)} className="text-xs bg-white/10 px-2 py-1 rounded hover:bg-white/20">
+                      Upload
+                    </button>
+                  )}
+                </div>
+
+                {/* Species Tags */}
+                {clip.classificationComplete && !clip.classificationError && (
+                  <div className="flex gap-2 mt-2">
+                    {Object.entries(clip.speciesCounts).map(([s, c]) => (
+                      <span key={s} className="text-xs bg-mint/20 text-mint px-2 py-0.5 rounded">{s} ({c})</span>
+                    ))}
+                  </div>
                 )}
-                {uploadedUrls?.videoUrl ? (
-                  <Link href={uploadedUrls.videoUrl} className="text-mint underline text-sm" target="_blank">
-                    View upload
-                  </Link>
-                ) : null}
               </div>
-              {uploadError ? <p className="text-sm text-red-400">{uploadError}</p> : null}
-            </div>
-          ) : (
-            <p className="text-sm text-slate-400">Stop recording to see the clip preview.</p>
-          )}
+            ))}
+
+            {captures.length === 0 && <p className="text-slate-500 text-sm">No recordings yet.</p>}
+          </div>
         </div>
       </div>
     </div>
