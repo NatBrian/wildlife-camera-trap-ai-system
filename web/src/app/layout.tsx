@@ -10,10 +10,13 @@ export const metadata: Metadata = {
   description: "Lightweight web UI for viewing camera-trap clips",
 };
 
+import Script from "next/script";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body className={`${space.className} bg-night text-slate-100`}>
+        <Script src="/onnxruntime/ort.all.min.js" strategy="beforeInteractive" />
         <div className="min-h-screen">
           <header className="border-b border-white/10 sticky top-0 z-20 backdrop-blur bg-night/80">
             <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between gap-6">

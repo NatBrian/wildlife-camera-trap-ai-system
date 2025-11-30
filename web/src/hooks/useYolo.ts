@@ -1,8 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as ort from "onnxruntime-web";
+// import * as ort from "onnxruntime-web"; // Removed to avoid build errors
 import { Detection } from "@/types";
+
+// Declare global ort variable loaded via script tag
+declare global {
+  const ort: any;
+}
 
 type Options = {
   modelUrl: string;
@@ -248,7 +253,7 @@ export function useYolo(options: Options): UseYoloResult {
   const pendingRequests = useRef<Map<string, { resolve: (d: Detection[]) => void; reject: (e: Error) => void }>>(new Map());
 
   // Main Thread State
-  const sessionRef = useRef<ort.InferenceSession | null>(null);
+  const sessionRef = useRef<any | null>(null);
 
   const inputSize = options.inputSize ?? 640;
   const useWorker = options.useWorker ?? true;
