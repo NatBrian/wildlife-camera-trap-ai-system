@@ -36,6 +36,7 @@ export default function CameraCapture() {
   const [deviceId, setDeviceId] = useState(DEFAULT_DEVICE_ID);
   const [autoRecord, setAutoRecord] = useState(false);
   const [autoUpload, setAutoUpload] = useState(false);
+  const [enableClassifier, setEnableClassifier] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [recording, setRecording] = useState(false);
   const [liveCounts, setLiveCounts] = useState<SpeciesCounts>({});
@@ -104,6 +105,7 @@ export default function CameraCapture() {
     labelsUrl: DEFAULT_MODEL_CONFIG.classifier?.labelsUrl,
     inputSize: DEFAULT_MODEL_CONFIG.classifier?.inputSize,
     preferBackend: "webgpu",
+    enabled: enableClassifier,
   });
 
   // Log classifier ready state on every render
@@ -254,7 +256,7 @@ export default function CameraCapture() {
       setStatus("Clip recorded. Processing in background...");
 
       // Start Async Classification
-      if (classifierReady) {
+      if (classifierReady && enableClassifier) {
         console.log(`[Capture ${id}] Starting classification`);
 
         const runClassification = async () => {
@@ -296,7 +298,9 @@ export default function CameraCapture() {
         });
       } else {
         // No classifier, just mark complete
-        updateCapture(id, { classificationComplete: true, classificationError: "Classifier not ready" });
+        // If disabled, we don't treat it as an error, just skipped
+        const errorMsg = enableClassifier ? "Classifier not ready" : null;
+        updateCapture(id, { classificationComplete: true, classificationError: errorMsg });
         if (autoUpload) processUpload(clip);
       }
     };
@@ -578,6 +582,20 @@ export default function CameraCapture() {
               />
             </label>
           </div>
+          <div className="mt-4">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={enableClassifier}
+                onChange={(e) => setEnableClassifier(e.target.checked)}
+                className="accent-mint"
+              />
+              <span className="text-slate-200">Enable Post-Processing Classifier (SpeciesNet)</span>
+            </label>
+            <p className="text-xs text-slate-500 ml-6 mt-1">
+              If enabled, runs a second pass on captured clips to identify specific species. Requires more memory.
+            </p>
+          </div>
           <p className="text-xs text-slate-500">
             Note: Actual resolution and FPS depend on camera hardware capabilities. Bitrate is a target for the encoder.
           </p>
@@ -592,7 +610,11 @@ export default function CameraCapture() {
           <StatusPill label="Recording" value={recording ? "On" : "Off"} tone={recording ? "warn" : "muted"} />
           <StatusPill label="FPS" value={fps ? `${fps}` : "—"} tone="muted" />
           <StatusPill label="Detections" value={detectionSummary || "None"} tone="muted" />
-          <StatusPill label="Classifier (post-rec)" value={classifierReady ? "Ready" : "Loading"} tone={classifierReady ? "good" : "warn"} />
+          <StatusPill
+            label="Classifier (post-rec)"
+            value={!enableClassifier ? "Disabled" : classifierReady ? "Ready" : "Loading"}
+            tone={!enableClassifier ? "muted" : classifierReady ? "good" : "warn"}
+          />
         </div>
 
         {recording && (

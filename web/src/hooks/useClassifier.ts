@@ -7,6 +7,7 @@ type Options = {
     labelsUrl?: string;
     inputSize?: number;
     preferBackend?: "webgpu" | "wasm";
+    enabled?: boolean;
 };
 
 type ClassificationResult = {
@@ -30,6 +31,12 @@ export function useClassifier(options: Options): UseClassifierResult {
     const pendingRequests = useRef<Map<string, { resolve: (d: ClassificationResult[]) => void; reject: (e: Error) => void }>>(new Map());
 
     useEffect(() => {
+        if (options.enabled === false) {
+            setReady(false);
+            setError(null);
+            return;
+        }
+
         setReady(false);
         setError(null);
 
@@ -79,7 +86,7 @@ export function useClassifier(options: Options): UseClassifierResult {
             workerRef.current = null;
             pendingRequests.current.clear();
         };
-    }, [options.modelUrl, options.labelsUrl, options.preferBackend, options.inputSize]);
+    }, [options.modelUrl, options.labelsUrl, options.preferBackend, options.inputSize, options.enabled]);
 
     const runClassifier = useCallback(
         async (image: ImageData): Promise<ClassificationResult[]> => {

@@ -237,9 +237,12 @@ self.onmessage = async (e) => {
             if (payload.preferBackend === "webgpu" && typeof navigator !== "undefined" && navigator.gpu) {
                 executionProviders.unshift("webgpu");
             }
+            // Import ONNX Runtime Web from local
+            importScripts("/onnxruntime/ort.all.min.js");
 
             // Configure WASM paths
             ort.env.wasm.wasmPaths = "/onnxruntime/";
+            ort.env.wasm.numThreads = 1;
 
             session = await ort.InferenceSession.create(modelUrl, {
                 executionProviders,

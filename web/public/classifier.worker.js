@@ -1,7 +1,7 @@
 // Web Worker for SpeciesNet Classification
 
-// Import ONNX Runtime Web from CDN
-importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.all.min.js");
+// Import ONNX Runtime Web from local
+importScripts("/onnxruntime/ort.all.min.js");
 
 // Global state
 let session = null;
@@ -10,8 +10,9 @@ let outputNames = null;
 let labels = [];
 let inputSize = 224; // Default, will be updated by config
 
-// Configure ORT to load WASM from CDN
-ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
+// Configure ORT to load WASM from local
+ort.env.wasm.wasmPaths = "/onnxruntime/";
+ort.env.wasm.numThreads = 1;
 
 // Helper function: Softmax
 function softmax(logits) {

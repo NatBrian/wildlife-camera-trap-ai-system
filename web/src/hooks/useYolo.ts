@@ -316,7 +316,8 @@ export function useYolo(options: Options): UseYoloResult {
 
         } else {
           // --- MAIN THREAD MODE ---
-          ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/";
+          ort.env.wasm.wasmPaths = "/onnxruntime/";
+          ort.env.wasm.numThreads = 1;
 
           const executionProviders = ["wasm"];
           if (options.preferBackend === "webgpu" && typeof navigator !== "undefined" && (navigator as any).gpu) {

@@ -5,6 +5,7 @@ animal.mp4
 notebook/wildlife_yolov8
 yolov8n.pt
 runs
+onnxruntime
 
 # Logs
 logs
