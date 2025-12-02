@@ -1,4 +1,4 @@
-# Wildlife Camera-Trap System
+# Wildlife Camera-Trap AI System
 
 An end-to-end AI system for detecting and recording wildlife. Supports training custom models, running inference on edge devices (Python) or directly in the browser (Web), and managing clips via a modern dashboard.
 
@@ -13,20 +13,34 @@ An end-to-end AI system for detecting and recording wildlife. Supports training 
 │   └── .env.example               # Supabase keys template
 ├── notebook/                      # Model Training
 │   └── wildlife_yolov8_pipeline.ipynb # End-to-end YOLOv8 training & export pipeline
+├── speciesnet/                    # SpeciesNet Conversion Tools
+│   ├── convert_speciesnet_keras.py # Download & convert SpeciesNet to ONNX
+│   ├── generate_labels.py         # Extract species labels from model metadata
+│   ├── inspect_onnx_labels.py     # General ONNX label inspection tool
+│   └── quantize_model.py          # INT8 quantization for reduced model size
 ├── edge/                          # Python Capture App (Dedicated Hardware)
-│   ├── config.example.yaml        # Capture settings (camera, model, thresholds)
+│   ├── config.yaml                # Capture settings (camera, model, thresholds)
 │   ├── main.py                    # Orchestrates capture loop
 │   ├── detection.py               # YOLOv8 (PyTorch) wrapper
 │   ├── recorder.py                # Video recording & file management
-│   └── supabase_client.py         # Uploads metadata & thumbnails
+│   ├── supabase_client.py         # Uploads metadata & thumbnails
 └── web/                           # Next.js Web App (Dashboard + Browser Capture)
-    ├── public/models/             # ONNX models & labels for browser inference
+    ├── public/
+    │   ├── models/                # ONNX models & labels
+    │   ├── classifier.worker.js   # SpeciesNet inference worker
+    │   ├── yolo.worker.js         # YOLO detection worker
     ├── src/app/
     │   ├── page.tsx               # Dashboard (Clip List)
     │   └── capture/page.tsx       # In-Browser Capture Page
     ├── src/components/
-    │   └── CameraCapture.tsx      # ONNX Runtime Web implementation
-    └── src/lib/modelConfig.ts     # Browser model configuration
+    │   └── CameraCapture.tsx      # Main capture component
+    ├── src/hooks/
+    │   ├── useYolo.ts             # YOLO detection hook (hybrid worker/main-thread)
+    │   └── useClassifier.ts       # SpeciesNet classification hook
+    └── src/lib/
+        ├── modelConfig.ts         # Model configuration (detector + classifier)
+        ├── processRecordedClip.ts # Post-recording classification logic
+        └── uploadClip.ts          # Supabase upload utilities
 ```
 
 ## 1. Notebook (Training & Export)
@@ -41,23 +55,38 @@ Located in `notebook/wildlife_yolov8_pipeline.ipynb`.
 
 ## 2. Web App (Dashboard + Browser Capture)
 
-A Next.js application.
+A Next.js application with advanced AI-powered wildlife detection and classification.
 
 ### Features
 - **Dashboard**: Browse, filter, and watch recorded clips stored in Supabase.
 - **In-Browser Capture** (`/capture`): 
   - Turns any laptop or phone into a camera trap.
-  - Runs **YOLOv8 via ONNX Runtime Web** directly in the browser (Client-side only).
-  - **Optimized Pipeline**: Uses efficient keyframe capture during live detection for accurate post-processing without video seeking.
-  - **CDN Powered**: Loads AI engines via jsDelivr CDN for reliable performance.
-  - Detects animals, auto-records clips, and uploads them to Supabase.
-  - Configurable models (e.g., `my-ena24.onnx`, `MDV6-yolov10-c.onnx`) in `public/models`.
+  - **Two-Stage AI Pipeline**:
+    - **Stage 1 (Detection)**: Runs via ONNX Runtime Web to detect animals in real-time.
+    - **Stage 2 (Classification)**: Classifier identifies specific species from detected animals (optional, configurable via UI).
+  - **Hybrid Architecture**: 
+    - Main-thread YOLO inference for low-latency live view (smooth bounding boxes).
+    - Web Worker-based YOLO and SpeciesNet for background post-recording processing (no UI freezing).
+  - **Efficient Keyframe Capture**: Captures high-quality frames during live detection, eliminating video seeking during post-processing.
+  - **CDN Powered**: ONNX Runtime loaded via local files with CDN fallback for reliability.
+  - Auto-records clips when animals are detected and uploads to Supabase.
+  - Configurable models in `public/models` (custom ENA24).
+
+### AI Pipeline Details
+1. **Live Detection**: Runs on every Nth frame (configurable) to detect animals.
+2. **Auto-Recording**: When an animal is detected, recording automatically starts and captures keyframes.
+3. **Post-Processing Classification** (Optional):
+   - Extracts captured keyframes with animal detections.
+   - Crops each detected animal bounding box.
+   - Runs SpeciesNet classifier on each crop to identify species.
+   - Combines results into species counts for the entire clip.
+4. **Upload**: Metadata, thumbnails, and species counts uploaded to Supabase.
 
 ### Setup
 1. `cd web`
 2. `cp .env.example .env.local` and fill in Supabase credentials.
 3. `npm install`
-4. `npm run dev` -> Open `http://localhost:3000`
+4. `npm run dev` → Open `http://localhost:3000`
 
 ## 3. Edge App (Python Capture)
 

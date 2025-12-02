@@ -57,7 +57,7 @@ python quantize_model.py
 
 To use SpeciesNet in the web application, we implement a **Two-Stage Pipeline**:
 
-1.  **Detection (Stage 1):** Use a general purpose detector (MegaDetector v5 / YOLOv10) to find animals and generate bounding boxes.
+1.  **Detection (Stage 1):** Use a general purpose detector (MegaDetector v6 YOLOv10) to find animals and generate bounding boxes.
 2.  **Classification (Stage 2):** Crop the detected animal regions and pass them to SpeciesNet to identify the specific species.
 
 ### Configuration
@@ -66,37 +66,95 @@ Update your `web/src/lib/modelConfig.ts` to include the classifier configuration
 
 ```typescript
 export const DEFAULT_MODEL_CONFIG = {
-  // Stage 1: Detector (MegaDetector)
+  // Stage 1: Detector (MegaDetector v6)
   name: "megadetector_v5a",
   modelUrl: "/models/MDV6-yolov10-c.onnx",
   labelsUrl: "/models/labels.json",
   inputSize: 640,
   confThreshold: 0.20,
+  iouThreshold: 0.45,
+  processEveryN: 3,
+  silenceTimeoutMs: 4000,
   
   // Stage 2: Classifier (SpeciesNet)
   classifier: {
     modelUrl: "/models/speciesnet_quant.onnx",
     labelsUrl: "/models/speciesnet_labels.json",
-    inputSize: 224, // Use 224 for speed, or 480 for max accuracy
+    inputSize: 480, // Use 480 for accuracy (model supports 224, 384, or 480)
     topK: 1,
   },
-  // ...
 };
 ```
 
+### Web Worker Architecture
+
+The web app uses dedicated Web Workers for AI inference:
+
+- **`web/public/yolo.worker.js`**: Handles MegaDetector inference
+  - Loads ONNX Runtime from `/onnxruntime/ort.all.min.js`
+  - Supports both channels-first (NCHW) tensor layout for YOLO models
+  - Used for both live detection (main thread) and post-processing (worker)
+
+- **`web/public/classifier.worker.js`**: Handles SpeciesNet inference
+  - Loads ONNX Runtime from `/onnxruntime/ort.all.min.js`
+  - Uses channels-last (NHWC) tensor layout for SpeciesNet
+  - Runs only during post-processing (optional, configurable in UI)
+  - Returns top-5 classification results with confidence scores
+
+Both workers load ONNX Runtime WASM files from `/onnxruntime/` (local files copied during `npm install` via `postinstall` script).
+
 ### Inference Logic
 
-The `CameraCapture` component handles the pipeline:
-1.  **Detect:** Run YOLO inference on the full frame.
-2.  **Keyframe Capture:** Capture high-quality frames of detected animals during live recording.
-3.  **Crop & Resize:** Crop the animal from the captured frames and resize to the classifier's input size (480x480).
-4.  **Classify:** Run SpeciesNet inference on the crop.
-    - **Top-K Fallback:** Checks the top 5 results.
-    - **Blank Filtering:** Ignores "blank" labels if a valid species is found in the top 5 with sufficient confidence (> 0.1).
-    - **Generic Fallback:** If no specific species is found, falls back to the generic "animal" label to ensure no detections are lost.
-5.  **Update:** Replace the generic "animal" label with the specific species name (e.g., "African Elephant").
+The `CameraCapture` component orchestrates the two-stage pipeline:
+
+1.  **Live Detection (Main Thread):**
+    - Runs MegaDetector on every Nth frame (configurable via `processEveryN`).
+    - Draws bounding boxes on the live canvas for real-time feedback.
+    - Captures keyframes (ImageData + detections) when animals are detected.
+
+2.  **Auto-Recording:**
+    - Starts recording when an animal is first detected.
+    - Continues recording as long as animals are present.
+    - Stops recording after `silenceTimeoutMs` milliseconds of no detections.
+    - All captured keyframes are stored during recording.
+
+3.  **Post-Processing Classification (Optional, Web Worker):**
+    - Triggered after recording stops (if classifier is enabled in UI).
+    - Processes captured keyframes using `classifyCapturedFrames()`:
+      - For each keyframe with animal detections:
+        - Crops each detected animal bounding box.
+        - Resizes crop to classifier input size (480x480).
+        - Runs SpeciesNet classifier via `useClassifier` hook.
+      - Uses top-5 results with blank filtering:
+        - Skips "blank" labels if a valid species is found in top-5 with score > 0.1.
+        - Falls back to generic "animal" label if no specific species identified.
+    - Returns species counts for the entire clip.
+
+4.  **Upload:**
+    - Video blob, thumbnail, metadata, and species counts uploaded to Supabase via `uploadClipToSupabase()`.
+
+### Key Implementation Details
+
+- **Tensor Layouts:**
+  - YOLO (MegaDetector): NCHW layout `[1, 3, 640, 640]` (channels-first)
+  - SpeciesNet: NHWC layout `[1, 480, 480, 3]` (channels-last)
+  
+- **Normalization:**
+  - Both models expect pixel values normalized to 0.0-1.0 range (divide by 255).
+
+- **Keyframe Capture:**
+  - Instead of seeking through the recorded video, keyframes are captured during live detection.
+  - This eliminates video decoding latency and ensures consistent frame quality.
+
+- **Classification Strategy:**
+  - Classifier is optional and disabled by default in the UI.
+  - Top-5 results analyzed to filter out "blank" predictions.
+  - Score threshold of 0.1 for species (lower than detection threshold due to classifier uncertainty).
+  - Falls back to generic YOLO label ("animal") if classifier unable to identify species.
 
 ## Files
 *   `convert_speciesnet_keras.py`: Script to download and convert the model.
 *   `generate_labels.py`: Script to parse and generate the labels JSON.
+*   `inspect_onnx_labels.py`: General tool to inspect ONNX model labels.
+*   `quantize_model.py`: Script to quantize model to INT8 for reduced size.
 *   `requirements.txt`: Python dependencies.
