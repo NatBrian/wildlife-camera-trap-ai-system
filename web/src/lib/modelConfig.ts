@@ -1,7 +1,7 @@
 export const DEFAULT_MODEL_CONFIG = {
   name: "megadetector_v5a",
-  modelUrl: "/models/MDV6-yolov10-c.onnx",
-  labelsUrl: "/models/labels.json",
+  modelUrl: "/models/my-MDV6-yolov10-c-hybrid-7class.onnx",
+  labelsUrl: "/models/labels_my-MDV6-yolov10-c-hybrid-7class.json",
   inputSize: 640,
   confThreshold: 0.20,
   iouThreshold: 0.45,
