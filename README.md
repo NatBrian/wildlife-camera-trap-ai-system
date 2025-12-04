@@ -2,7 +2,7 @@
 
 An end-to-end AI system for detecting and recording wildlife. Supports training custom models, running inference on edge devices (Python) or directly in the browser (Web), and managing clips via a modern dashboard.
 
-![demo](web/public/demo.mp4)
+![demo](web/public/demo.gif)
 
 ## Project Structure
 
