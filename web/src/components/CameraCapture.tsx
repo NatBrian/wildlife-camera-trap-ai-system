@@ -31,12 +31,28 @@ type UploadState = "idle" | "uploading" | "success" | "error";
 
 const SUPPORTED = typeof window !== "undefined" && typeof navigator !== "undefined";
 
+const AVAILABLE_MODELS = {
+  "megadetector_v6": {
+    name: "MegaDetector v6 (Generic)",
+    modelUrl: "/models/MDV6-yolov10-c.onnx",
+    labelsUrl: "/models/labels.json",
+  },
+  "hybrid_7class": {
+    name: "Hybrid 7-Class (Backyard)",
+    modelUrl: "/models/my-MDV6-yolov10-c-hybrid-7class.onnx",
+    labelsUrl: "/models/labels_my-MDV6-yolov10-c-hybrid-7class.json",
+  }
+};
+
+type ModelKey = keyof typeof AVAILABLE_MODELS;
+
 export default function CameraCapture() {
   const [isMounted, setIsMounted] = useState(false);
   const [deviceId, setDeviceId] = useState(DEFAULT_DEVICE_ID);
   const [autoRecord, setAutoRecord] = useState(false);
   const [autoUpload, setAutoUpload] = useState(false);
   const [enableClassifier, setEnableClassifier] = useState(false);
+  const [selectedModelKey, setSelectedModelKey] = useState<ModelKey>("megadetector_v6");
   const [cameraReady, setCameraReady] = useState(false);
   const [recording, setRecording] = useState(false);
   const [liveCounts, setLiveCounts] = useState<SpeciesCounts>({});
@@ -89,8 +105,8 @@ export default function CameraCapture() {
 
   // 1. Live Camera Model (Main Thread for speed)
   const { ready: modelReady, error: modelError, inputSize, runInference: runLiveInference } = useYolo({
-    modelUrl: DEFAULT_MODEL_CONFIG.modelUrl,
-    labelsUrl: DEFAULT_MODEL_CONFIG.labelsUrl,
+    modelUrl: AVAILABLE_MODELS[selectedModelKey].modelUrl,
+    labelsUrl: AVAILABLE_MODELS[selectedModelKey].labelsUrl,
     inputSize: DEFAULT_MODEL_CONFIG.inputSize,
     confThreshold: DEFAULT_MODEL_CONFIG.confThreshold,
     iouThreshold: DEFAULT_MODEL_CONFIG.iouThreshold,
@@ -544,6 +560,20 @@ export default function CameraCapture() {
                 <option value={480}>480p</option>
                 <option value={720}>720p</option>
                 <option value={1080}>1080p</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-slate-400">Detection Model</span>
+              <select
+                value={selectedModelKey}
+                onChange={(e) => setSelectedModelKey(e.target.value as ModelKey)}
+                className="bg-white/5 border border-white/10 rounded px-2 py-1"
+              >
+                {Object.entries(AVAILABLE_MODELS).map(([key, config]) => (
+                  <option key={key} value={key}>
+                    {config.name}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="flex flex-col gap-1">
