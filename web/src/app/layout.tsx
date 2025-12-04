@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { Space_Grotesk } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "@/styles/globals.css";
 
 const space = Space_Grotesk({ subsets: ["latin"], display: "swap" });
@@ -42,6 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           <main className="max-w-6xl mx-auto px-4 pb-12 pt-6">{children}</main>
         </div>
+        <Analytics />
       </body>
     </html>
   );
