@@ -1,7 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { Space_Grotesk } from "next/font/google";
-import { Analytics } from "@vercel/analytics/next";
 import "@/styles/globals.css";
 
 const space = Space_Grotesk({ subsets: ["latin"], display: "swap" });
