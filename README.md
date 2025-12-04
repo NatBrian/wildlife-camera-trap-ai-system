@@ -12,7 +12,8 @@ An end-to-end AI system for detecting and recording wildlife. Supports training 
 │   ├── supabase_schema.sql        # Database schema (clips table + indexes + RLS)
 │   └── .env.example               # Supabase keys template
 ├── notebook/                      # Model Training
-│   └── wildlife_yolov8_pipeline.ipynb # End-to-end YOLOv8 training & export pipeline
+│   ├── wildlife_yolov8_pipeline.ipynb # End-to-end YOLOv8 training & export pipeline
+│   └── megadetector_hybrid_detection_pipeline.ipynb # Hybrid MegaDetector training
 ├── speciesnet/                    # SpeciesNet Conversion Tools
 │   ├── convert_speciesnet_keras.py # Download & convert SpeciesNet to ONNX
 │   ├── generate_labels.py         # Extract species labels from model metadata
@@ -45,6 +46,7 @@ An end-to-end AI system for detecting and recording wildlife. Supports training 
 
 ## 1. Notebook (Training & Export)
 
+### YOLOv8 Pipeline
 Located in `notebook/wildlife_yolov8_pipeline.ipynb`.
 - **Purpose**: Train YOLOv8 models on wildlife datasets (e.g., ENA24, LILA BC).
 - **Features**:
@@ -52,6 +54,15 @@ Located in `notebook/wildlife_yolov8_pipeline.ipynb`.
   - Model training (YOLOv8n/s/m).
   - Evaluation and visualization.
   - **Export to ONNX**: Converts trained models to `.onnx` format for use in the Web App.
+
+### MegaDetector Hybrid Pipeline
+Located in `notebook/megadetector_hybrid_detection_pipeline.ipynb`.
+- **Purpose**: Fine-tune MegaDetector (YOLOv10) to detect specific backyard animals while preserving generic classes.
+- **Features**:
+  - Hybrid training (MegaDetector weights + Custom dataset).
+  - Preserves generic classes: `animal`, `person`, `vehicle`.
+  - Adds specific classes: `bird`, `squirrel`, `dog`, `cat`.
+  - Export to ONNX.
 
 ## 2. Web App (Dashboard + Browser Capture)
 
