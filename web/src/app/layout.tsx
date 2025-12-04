@@ -13,6 +13,8 @@ export const metadata: Metadata = {
 
 import Script from "next/script";
 
+import { Analytics } from "@vercel/analytics/next";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
