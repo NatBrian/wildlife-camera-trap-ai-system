@@ -12,6 +12,8 @@ export const metadata: Metadata = {
 
 import Script from "next/script";
 
+import { Analytics } from "@vercel/analytics/next";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -42,6 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           <main className="max-w-6xl mx-auto px-4 pb-12 pt-6">{children}</main>
         </div>
+        <Analytics />
       </body>
     </html>
   );
