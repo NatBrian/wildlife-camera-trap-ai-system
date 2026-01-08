@@ -1,12 +1,28 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabaseClient';
+import { createClient } from '@supabase/supabase-js';
 
 /**
  * API endpoint to keep Supabase database active
  * This endpoint performs a simple database query to prevent the database from pausing
+ * Note: This endpoint is intentionally public to allow external pinging
  */
 export async function GET() {
   try {
+    // Create a new Supabase client for this endpoint
+    // Using environment variables directly to avoid authentication issues
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error('Missing Supabase environment variables');
+      return NextResponse.json(
+        { success: false, error: 'Server configuration error' },
+        { status: 500 }
+      );
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
     // Perform a simple database query to keep it active
     // Using rpc('version') as it's a lightweight query that doesn't modify data
     const { error } = await supabase
